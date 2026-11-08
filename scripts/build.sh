@@ -13,6 +13,21 @@ json_get() {
   python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))'"$1"')' "${lock_file}"
 }
 
+# Parallel job count: sources.json "build_jobs" wins, then $BUILD_JOBS, then 2.
+# Keeping it in sources.json means tuning the build never needs a workflow edit.
+lock_build_jobs="$(
+  python3 -c '
+import json, sys
+try:
+    v = json.load(open(sys.argv[1])).get("build_jobs")
+    print(int(v) if v else "")
+except Exception:
+    print("")
+' "${lock_file}"
+)"
+build_jobs="${lock_build_jobs:-${BUILD_JOBS:-2}}"
+echo "build jobs: ${build_jobs}"
+
 case "${1:-}" in
   sync)
     cd "${source_root}"
@@ -23,12 +38,21 @@ case "${1:-}" in
       --optimized-fetch --retry-fetches=3
 
     # Pin the YARP/GUI2 projects to the revisions recorded in sources.json.
+    # repo names each project's remote after the manifest remote (e.g. "github"),
+    # never "origin", so resolve the real remote name instead of hardcoding it.
     while read -r path sha; do
       [ -n "${path}" ] || continue
       echo "Pinning ${path} -> ${sha}"
-      git -C "${path}" fetch --depth=1 origin "${sha}" \
-        || git -C "${path}" fetch origin
+      remote="$(git -C "${path}" remote | head -n 1)"
+      if [ -z "${remote}" ]; then
+        echo "::error::${path} has no git remote after repo sync"
+        exit 1
+      fi
+      git -C "${path}" fetch --depth=1 "${remote}" "${sha}" \
+        || git -C "${path}" fetch "${remote}" "${sha}" \
+        || git -C "${path}" fetch --tags "${remote}"
       git -C "${path}" checkout -f "${sha}"
+      git -C "${path}" log -1 --format='  at %h %s'
     done < <(python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -68,16 +92,14 @@ for p in d["projects"]:
     export SOONG_GOMEMLIMIT=8GiB
     export GOMEMLIMIT=8GiB
     export GOGC=50
-    export GOMAXPROCS=2
-    export SOONG_UI_NINJA_ARGS=-j1
-    export NINJA_HIGHMEM_NUM_JOBS=1
+    export GOMAXPROCS="${build_jobs}"
     export YARP_PLATFORM="$(json_get '["platform"]')"
     lunch_target="$(json_get '["lunch"]')"
     set +u
     source build/envsetup.sh
     lunch "${lunch_target}"
-    mka -j"${BUILD_JOBS:-2}" installclean
-    mka -j"${BUILD_JOBS:-2}" recoveryimage
+    mka -j"${build_jobs}" installclean
+    mka -j"${build_jobs}" recoveryimage
     ;;
 
   package)

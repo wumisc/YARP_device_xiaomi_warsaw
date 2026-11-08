@@ -18,5 +18,6 @@
   },
   "platform": "sm8750",
   "lunch": "twrp_sm8750-bp2a-eng",
-  "product": "sm8750"
+  "product": "sm8750",
+  "build_jobs": 4
 }
