@@ -1,55 +1,13 @@
-name: Build TWRP for warsaw
+name: Build TWRP for warsaw (deprecated)
+
+# The old twrp_warsaw-eng build used the incomplete device tree in this repo.
+# Use "Build YARP recovery (warsaw / SM8750)" instead.
 on:
   workflow_dispatch:
 
 jobs:
-  Build_twrp_warsaw:
+  deprecated:
     runs-on: ubuntu-latest
     steps:
-      - name: Clean workspace
-        run: df -h && sudo rm -rf ./*
-
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libsdl1.2-dev libssl-dev libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev
-
-      - name: Setup ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-twrp-warsaw
-
-      - name: Init & Sync TWRP source
-        run: |
-          git config --global user.name "wumisc"
-          git config --global user.email "wumisc@localhost"
-          # 移除 --depth=1 ！！不浅克隆，保证repo同步稳定
-          repo init -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git -b twrp-16.0
-          # 增加重试逻辑，repo sync失败自动重试3次
-          for i in {1..3}; do
-            echo "===== repo sync attempt $i ====="
-            repo sync -c -j4 --no-tags
-            if [ $? -eq 0 ]; then
-              echo "sync success"
-              break
-            fi
-            echo "sync failed, wait 90s retry"
-            sleep 90
-          done
-
-      - name: Clone device tree
-        run: |
-          git clone https://github.com/wumisc/twrp_device_xiaomi_warsaw.git device/xiaomi/warsaw
-
-      - name: Lunch
-        run: source build/envsetup.sh && lunch twrp_warsaw-eng
-
-      - name: Build TWRP
-        run: source build/envsetup.sh && lunch twrp_warsaw-eng && m recoveryimage
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: twrp-warsaw-img
-          path: out/target/product/warsaw/recovery.img
+      - name: Point to the maintained workflow
+        run: echo "Deprecated. Run 'Build YARP recovery (warsaw / SM8750)' instead."

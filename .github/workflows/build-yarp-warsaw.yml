@@ -1,0 +1,135 @@
+name: Build YARP recovery (warsaw / SM8750)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish the image to GitHub Releases as well'
+        type: boolean
+        default: false
+  push:
+    branches: [master]
+    paths:
+      - 'sources.json'
+      - 'scripts/build.sh'
+      - '.github/workflows/build-yarp-warsaw.yml'
+  schedule:
+    - cron: '0 4 * * 1'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yarp-warsaw-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    env:
+      YARP_SOURCE_DIR: /build/yarp
+      SYNC_JOBS: '8'
+      BUILD_JOBS: '2'
+    steps:
+      - name: Checkout build configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Prepare runner storage (95 GiB source + 16 GiB swap)
+        run: |
+          set -euo pipefail
+          df -h / /mnt
+          free -h
+          sudo swapoff -a
+          sudo rm -f /mnt/swapfile /swapfile
+          sudo docker image prune --all --force || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /usr/local/swift /opt/hostedtoolcache
+          sudo apt-get clean
+          sudo fallocate -l 16G /yarp-swapfile
+          sudo chmod 600 /yarp-swapfile
+          sudo mkswap /yarp-swapfile
+          sudo swapon /yarp-swapfile
+          sudo mkdir -p /build/yarp
+          sudo chown "$(id -u):$(id -g)" /build/yarp
+          df -h / /build/yarp
+          free -h
+          swapon --show
+          available_kib="$(df -Pk /build/yarp | awk 'NR == 2 {print $4}')"
+          if (( available_kib < 95 * 1024 * 1024 )); then
+            echo '::error::Less than 95 GiB available for sources and outputs.'
+            exit 1
+          fi
+
+      - name: Install Linux build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y git-core gnupg flex bison build-essential zip curl \
+            zlib1g-dev libc6-dev-i386 libx11-dev lib32z1-dev libgl1-mesa-dev \
+            libxml2-utils xsltproc unzip fontconfig python3 lz4 cpio bc rsync \
+            lzop kmod device-tree-compiler libssl-dev libncurses-dev repo
+          git config --global user.name 'YARP Build'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          mkdir -p logs dist
+
+      - name: Sync pinned YARP and SM8750 sources
+        run: bash scripts/build.sh sync 2>&1 | tee logs/sync.log
+
+      - name: Build recovery image
+        run: |
+          set -euo pipefail
+          (while true; do date -u; free -h; df -h /build/yarp; sleep 60; done) \
+            > logs/resources.log 2>&1 &
+          reporter_pid=$!
+          trap 'kill "$reporter_pid" 2>/dev/null || true' EXIT
+          sudo systemd-run --scope --unit=yarp-build \
+            --property=MemoryHigh=11G --property=MemoryMax=13G \
+            --property=MemorySwapMax=12G --property=CPUWeight=50 \
+            runuser -u "$(id -un)" -- env \
+              YARP_SOURCE_DIR="$YARP_SOURCE_DIR" BUILD_JOBS="$BUILD_JOBS" \
+              nice -n 10 bash "$GITHUB_WORKSPACE/scripts/build.sh" build \
+            2>&1 | tee logs/build.log
+
+      - name: Verify and package recovery image
+        run: bash scripts/build.sh package 2>&1 | tee logs/verification.log
+
+      - name: Upload recovery image and source record
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: YARP-warsaw-${{ github.run_id }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "yarp-warsaw-${{ github.run_number }}" \
+            dist/*.img dist/SHA256SUMS.txt dist/verification.json \
+            --title "YARP SM8750 / warsaw - build ${{ github.run_number }}" \
+            --notes "Automated YARP (TWRP 16 / GUI2) build. Sources are pinned in sources.json; see source-manifest.xml in the artifact. Test with fastboot boot before flashing."
+
+      - name: Capture final diagnostics
+        if: always()
+        run: |
+          mkdir -p logs
+          { date -u; free -h; df -h; swapon --show; sudo dmesg --ctime | tail -n 100 || true; } \
+            > logs/final-resources.log 2>&1
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: YARP-warsaw-logs-${{ github.run_id }}
+          path: logs/
+          if-no-files-found: ignore
+          retention-days: 14
